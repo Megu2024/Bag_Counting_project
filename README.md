@@ -1,4 +1,4 @@
-# 🧺 Sack / Bag Counter using YOLOv8 + Tracking
+# Sack / Bag Counter using YOLOv8 + Tracking
 
 A computer vision prototype that counts loaded sack bags crossing a virtual boundary line in a video.
 
