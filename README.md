@@ -1,83 +1,101 @@
-# Bag Counting – Loading Bay CV Prototype
+# Bag Counting – Loading Bay Computer Vision Prototype
 
-This repository contains a **computer vision prototype** that counts how many **sacks are loaded into a lorry** from CCTV-style video.  
-The system is designed to match the “bag counting” analytics shown in the Aivilon Tech demo videos.
-
-The core idea:
-
-- Detect workers and bags in each frame using **YOLOv8**.
-- Approximate the **sack on the worker’s head** from the upper part of the person bounding box.
-- Track each worker/sack over time using YOLO’s built‑in tracking.
-- Define a **virtual counting line** in the image that represents the loading boundary near the truck.
-- Count each sack **once**, exactly when its centre crosses this line **in the correct direction** (towards the lorry).
-- Generate an **annotated output video** with:
-  - The counting line drawn in green.
-  - A box only around the **sack region** (not the full person) once the sack has crossed the line.
-  - A text overlay showing `Bags counted (crossed line): N`.
+This repository contains a small computer vision project where I try to **count how many sacks are loaded into a lorry** just by looking at video.  
+The idea is to get close to the kind of “bag counting” analytics used in real warehouse and logistics setups.
 
 ---
 
-## 1. Repository structure
+## 1. What this project does
 
-- `bag_counter.py` – main script with detection, tracking, line‑crossing logic and video writing.
+In the videos, workers carry sacks towards a truck.  
+I place a **virtual line** near the truck and count how many sacks cross that line in the **loading direction**.
+
+Behind the scenes the script:
+
+- Uses **YOLOv8** to detect people and bag‑like objects.
+- Uses YOLO’s built‑in **tracking** so each worker/sack pair gets a stable ID over time.
+- Estimates where the **sack on the head** is by taking the upper part of the person’s bounding box.
+- Defines a configurable **line** that represents the loading boundary.
+- Increments the count exactly once when a worker+sack crosses that line towards the truck.
+- Produces an annotated video that shows:
+  - The green counting line.
+  - A box focused on the **sack/head region**, not the whole person.
+  - A running text overlay with the current bag count.
+
+---
+
+## 2. Files in this repo
+
+- `bag_counter.py` – main script with:
+  - YOLO detection and tracking
+  - line‑crossing and direction logic
+  - visualisation and counting
 - `requirements.txt` – Python dependencies (`ultralytics`, `opencv-python`).
-- `outputs/` – folder where annotated result videos are written (created automatically).
-- *(Input videos are not committed to the repo; reviewer should place them locally and point `--source` to them.)*
+- An output directory is created automatically when you run the script to store annotated clips.
 
 ---
 
-## 2. Approach in brief
+## 3. How the method works
 
-1. **Detection & tracking**
+### 3.1 Detection and tracking
 
-   - Uses `ultralytics` YOLOv8 (`yolov8s.pt`, COCO weights).
-   - Runs `model.track(..., persist=True)` so each physical worker/sack pair receives a **stable track ID** across frames.
-   - Relevant classes:
-     - COCO bag classes: `backpack`, `handbag`, `suitcase`.
-     - `person` class: used as a proxy when sacks are carried on workers’ heads.
+- I use `ultralytics` YOLOv8 with standard COCO weights.
+- I call `model.track(..., persist=True)` so that the same worker/sack keeps the **same track ID** across frames.
+- I look at:
+  - COCO “bag‑like” classes (`backpack`, `handbag`, `suitcase`).
+  - The `person` class, which I treat as a proxy for “person carrying a sack”.
 
-2. **Sack region approximation**
+### 3.2 Approximating the sack
 
-   - In the assignment clips, sacks are typically carried on the workers’ heads.
-   - For detections of class `person`, the code takes only the **upper ~45% of the person bounding box** and treats that region as the “bag”:
-     - This avoids drawing a box around the whole body.
-     - Works reasonably well for top‑carried sacks without needing a custom “sack” detector.
+In the given clips, sacks are usually carried on the workers’ heads or upper body.  
+Instead of training a new detector just for sacks, I do a simple approximation:
 
-3. **Virtual counting line**
+- Take the YOLO `person` box.
+- Crop only the **top part** of that box (roughly the head and upper torso).
+- Use that cropped region as the “sack area”.
+- Draw bounding boxes only over this region so the visuals focus on the sack, not the legs.
 
-   - A configurable line models the **boundary of the lorry** (e.g. just at the edge of the truck).
-   - The line is defined in **normalised coordinates** between 0 and 1:
-     - `(line_x1, line_y1)` – start point
-     - `(line_x2, line_y2)` – end point  
-       where `0` is left/top and `1` is right/bottom of the frame.
-   - The script automatically decides if the line is **vertical** or **horizontal** and applies directional logic accordingly.
+It’s a simple heuristic, but it works surprisingly well for this particular scenario.
 
-4. **Directional crossing logic**
+### 3.3 Virtual counting line
 
-   For each tracked sack centre:
+To model “loading into the truck”, I draw a **virtual line** in the image:
 
-   - If the line is **vertical**:
-     - Only counts when the centre moves from **right of the line** to **left of the line** (i.e. towards the truck).
-     - Movement left → right is ignored, so workers walking back are not double‑counted.
-   - If the line is **horizontal**:
-     - Only counts when the centre moves from **above** the line to **below** the line.
+- The line is defined by two points in **normalised coordinates** between 0 and 1:
+  - `(line_x1, line_y1)` – start
+  - `(line_x2, line_y2)` – end
+- `0` means left/top of the frame, `1` means right/bottom.
+- From these values the script decides whether the line is more **vertical** or **horizontal**.
 
-   Each track ID is added to a `crossed_ids` set once; the **global counter increments only once per track**.
+This line plays the role of an invisible gate: only sacks that cross it in the right direction are counted.
 
-5. **Output visualisation**
+### 3.4 Directional counting
 
-   - Green line = loading boundary.
-   - Yellow box = the **sack/head region** of any track that has crossed the line (or all sacks if `only_draw_crossed` is set `False` in code).
-   - Top‑left overlay text shows `Bags counted (crossed line): N`.
-   - Output video is written as `<input_name>_bag_counted.mp4` into the `outputs/` folder.
+For each tracked sack centre:
+
+- If the line is **vertical**:
+  - I only count if the centre moves from the **right side** of the line to the **left side** (towards the truck).
+  - Movements from left to right are ignored, so walking back does not increase the count.
+- If the line is **horizontal**:
+  - I only count if the centre moves from **above** the line to **below** it.
+
+Once a track has been counted, its ID is stored in a set and is **never counted again**.
+
+### 3.5 Visual output
+
+The resulting visualisation is meant to be easy to understand for non‑CV people:
+
+- Green line – where “loading” is considered to happen.
+- Yellow box – approximate sack/head region for each tracked worker.
+- Text overlay – `Bags counted (crossed line): N`.
 
 ---
 
-## 3. Setup
+## 4. Setup
 
-### 3.1. Environment
+### 4.1 Environment
 
-Requires **Python 3.9+**.
+- Python **3.9+** recommended.
 
 git clone <this-repo-url>
 cd <this-repo-folder>
